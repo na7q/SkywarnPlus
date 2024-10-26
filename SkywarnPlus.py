@@ -314,35 +314,62 @@ LOGGER.debug("SayAlert Blocked events: %s", SAYALERT_BLOCKED_EVENTS)
 LOGGER.debug("Tailmessage Blocked events: %s", TAILMESSAGE_BLOCKED_EVENTS)
 
 
+def validate_last_alerts_structure(last_alerts):
+    """
+    Ensure that last_alerts is a list of tuples where each tuple contains:
+    - A string (alert title)
+    - A list of dictionaries (alert details)
+    """
+    if not isinstance(last_alerts, list):
+        return False
+    for item in last_alerts:
+        if not (isinstance(item, list) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], list)):
+            return False
+    return True
+
 def load_state():
     """
     Load the state from the state file if it exists, else return an initial state.
-
-    The state file is expected to be a JSON file. If certain keys are missing in the
-    loaded state, this function will provide default values for those keys.
+    Validates and fixes any structural issues with `last_alerts`.
     """
-
     # Check if the state data file exists
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as file:
-            state = json.load(file)
+        try:
+            with open(DATA_FILE, "r") as file:
+                state = json.load(file)
 
-            # Ensure 'alertscript_alerts' key is present in the state, default to an empty list
-            state["alertscript_alerts"] = state.get("alertscript_alerts", [])
+                # Ensure 'alertscript_alerts' key is present in the state, default to an empty list
+                state["alertscript_alerts"] = state.get("alertscript_alerts", [])
 
-            # Process 'last_alerts' key to maintain the order of alerts using OrderedDict
-            # This step is necessary because JSON does not preserve order by default
-            last_alerts = state.get("last_alerts", [])
-            state["last_alerts"] = OrderedDict((x[0], x[1]) for x in last_alerts)
+                # Process 'last_alerts' key to maintain the order of alerts using OrderedDict
+                last_alerts = state.get("last_alerts", [])
+                
+                # Validate the structure of last_alerts
+                if validate_last_alerts_structure(last_alerts):
+                    state["last_alerts"] = OrderedDict((x[0], x[1]) for x in last_alerts)
+                else:
+                    LOGGER.error("Invalid format in 'last_alerts'. Resetting to default.")
+                    state["last_alerts"] = OrderedDict()
 
-            # Ensure 'last_sayalert' and 'active_alerts' keys are present in the state
-            state["last_sayalert"] = state.get("last_sayalert", [])
-            state["active_alerts"] = state.get("active_alerts", [])
+                # Ensure 'last_sayalert' and 'active_alerts' keys are present in the state
+                state["last_sayalert"] = state.get("last_sayalert", [])
+                state["active_alerts"] = state.get("active_alerts", [])
 
-            return state
+                return state
 
-    # If the state data file does not exist, return a default state
+        except (json.JSONDecodeError, IOError) as e:
+            LOGGER.error("Failed to load state from %s: %s", DATA_FILE, e)
+            # Return default state in case of failure
+            return {
+                "ct": None,
+                "id": None,
+                "alertscript_alerts": [],
+                "last_alerts": OrderedDict(),
+                "last_sayalert": [],
+                "active_alerts": [],
+            }
     else:
+        # If the state data file does not exist, return a default state
         return {
             "ct": None,
             "id": None,
@@ -356,25 +383,25 @@ def load_state():
 def save_state(state):
     """
     Save the state to the state file.
-
-    The state is saved as a JSON file. The function ensures certain keys in the state
-    are converted to lists before saving, ensuring consistency and ease of processing
-    when the state is later loaded.
+    Converts OrderedDict and other complex structures into lists before saving.
     """
+    try:
+        # Convert 'alertscript_alerts', 'last_sayalert', and 'active_alerts' keys to lists
+        state["alertscript_alerts"] = list(state["alertscript_alerts"])
+        state["last_sayalert"] = list(state["last_sayalert"])
+        state["active_alerts"] = list(state["active_alerts"])
 
-    # Convert 'alertscript_alerts', 'last_sayalert', and 'active_alerts' keys to lists
-    # This ensures consistency in data format, especially useful when loading the state later
-    state["alertscript_alerts"] = list(state["alertscript_alerts"])
-    state["last_sayalert"] = list(state["last_sayalert"])
-    state["active_alerts"] = list(state["active_alerts"])
+        # Convert 'last_alerts' from OrderedDict to list of tuples (for JSON compatibility)
+        if isinstance(state["last_alerts"], OrderedDict):
+            state["last_alerts"] = list(state["last_alerts"].items())
 
-    # Convert 'last_alerts' from OrderedDict to list of items
-    # This step is necessary because JSON does not natively support OrderedDict
-    state["last_alerts"] = list(state["last_alerts"].items())
+        # Save the state to the data file in a formatted manner
+        with open(DATA_FILE, "w") as file:
+            json.dump(state, file, ensure_ascii=False, indent=4)
+            LOGGER.debug("Successfully saved state to %s.", DATA_FILE)
 
-    # Save the state to the data file in a formatted manner
-    with open(DATA_FILE, "w") as file:
-        json.dump(state, file, ensure_ascii=False, indent=4)
+    except (TypeError, IOError) as e:
+        LOGGER.error("Failed to save state: %s", e)
 
 
 def get_alerts(countyCodes):
@@ -487,6 +514,7 @@ def get_alerts(countyCodes):
     # Loop over each county code and retrieve alerts from the API.
     for countyCode in countyCodes:
         url = "https://api.weather.gov/alerts/active?zone={}".format(countyCode)
+        print(url)
         #
         # WARNING: ONLY USE THIS FOR DEVELOPMENT PURPOSES
         # THIS URL WILL RETURN ALL ACTIVE ALERTS IN THE UNITED STATES
